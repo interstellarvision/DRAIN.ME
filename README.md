@@ -1,6 +1,6 @@
-# DRAIN.ME 💸
+# DRAIN.ME
 
-*We'll drain your funds... to lend them safely!*
+*We will drain your funds (to lend them safely!)*
 
 DeFi lending protocol - learning project.
 
