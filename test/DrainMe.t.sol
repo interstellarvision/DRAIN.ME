@@ -8,9 +8,6 @@ import "../src/DrainMe.sol";
 contract BadOwner {
 }
 
-import "forge-std/Test.sol";
-import "../src/DrainMe.sol"; 
-
 contract DrainMeTest is Test {
     receive() external payable {}
     DrainMe public vault;
