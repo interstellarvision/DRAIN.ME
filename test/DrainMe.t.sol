@@ -4,18 +4,24 @@ pragma solidity ^0.8.20;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol"; 
 import "forge-std/Test.sol";
 import "../src/DrainMe.sol";
+import {MockUSDC} from "./mocks/MockUSDC.sol";
 
 contract BadOwner {
 }
 
 contract DrainMeTest is Test {
     receive() external payable {}
+    MockUSDC public usdc;
     DrainMe public vault;
     address user = makeAddr("user"); 
 
     function setUp() public {
-        vault = new DrainMe();
+        usdc = new MockUSDC();
+        vault = new DrainMe(address(usdc));
         vm.deal(user, 10 ether); 
+        usdc.mint(address(this), 1_000_000 * 1e6); // 1M USDC
+        usdc.approve(address(vault), 1_000_000 * 1e6);
+        vault.provideLiquidity(100_000 * 1e6); // Заливаем 100k в пул
     }
 
     function test_Deposit() public {
@@ -306,6 +312,157 @@ contract DrainMeTest is Test {
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, user));
         vault.withdrawCollateral(user, 1 ether);
+    }
+
+    function test_Borrow_Success() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vault.borrow(1000 * 10 ** 6); // Borrow 1000 USDC
+        vm.stopPrank();
+    }
+
+    function test_Borrow_NoCollateral_Reverts() public {
+        vm.prank(user);
+        vm.expectRevert("No collateral deposited");
+        vault.borrow(1000 * 10 ** 6);
+    }
+
+    function test_Borrow_ExceedsLTV_Reverts() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vm.expectRevert("Borrow amount exceeds LTV");
+        vault.borrow(9000 * 10 ** 6); // Attempt to borrow more than 80% of collateral value
+        vm.stopPrank();
+    }
+
+    function test_Borrow_InsufficientLiquidity_Reverts() public {
+        vm.startPrank(user);
+        vm.deal(user, 90 ether);
+        vault.depositCollateral{value: 90 ether}();
+        vm.expectRevert("Insufficient USDC liquidity");
+        vault.borrow(120_000 * 10 ** 6); // Attempt to borrow more than available liquidity
+        vm.stopPrank();
+    }
+
+    function test_Borrow_ZeroAmount_Reverts() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vm.expectRevert("Amount cant be less than 0");
+        vault.borrow(0);
+        vm.stopPrank();
+    }
+
+    function test_Borrow_EmitsEvent() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vm.expectEmit(true, false, false, true);
+        emit DrainMe.Borrowed(user, 1000 * 10 ** 6);
+        vault.borrow(1000 * 10 ** 6);
+        vm.stopPrank();
+    }
+    
+    function test_Repay_Success() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vault.borrow(1000 * 10 ** 6); // Borrow 1000 USDC
+
+        usdc.mint(user, 1000 * 10 ** 6); // Mint USDC to user for repayment
+        usdc.approve(address(vault), 1000 * 10 ** 6); // Approve vault to spend USDC
+
+        vault.repay(500 * 10 ** 6); // Repay half of the borrowed amount
+        vm.stopPrank();
+    }
+
+    function test_Repay_ZeroAmount_Reverts() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vault.borrow(1000 * 10 ** 6); // Borrow 1000 USDC
+
+        usdc.mint(user, 1500 * 10 ** 6); // Mint more USDC than owed
+        usdc.approve(address(vault), 1500 * 10 ** 6); // Approve vault to spend USDC
+
+        vm.expectRevert('Amount must be > 0');
+        vault.repay(0); // Attempt to repay zero amount
+    }
+
+    function test_Repay_ExceedsDebt_Reverts() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vault.borrow(1000 * 10 ** 6); // Borrow 1000 USDC
+
+        usdc.mint(user, 1500 * 10 ** 6); // Mint more USDC than owed
+        usdc.approve(address(vault), 1500 * 10 ** 6); // Approve vault to spend USDC
+
+        vm.expectRevert("Repaying more than owed");
+        vault.repay(1500 * 10 ** 6); // Attempt to repay more than owed
+        vm.stopPrank();
+    }
+
+    function test_Repay_EmitsEvent() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vault.borrow(1000 * 10 ** 6); 
+        usdc.mint(user, 1500 * 10 ** 6);
+        usdc.approve(address(vault), 1500 * 10 ** 6);
+        
+        vm.expectEmit(true, false, false, true);
+        emit DrainMe.Repaid(user, 500 * 10 ** 6);
+        vault.repay(500 * 10 ** 6); // Repay half of the borrowed amount
+        vm.stopPrank();
+    }
+
+    function test_HealthFactor_NoBorrow() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        uint256 healthFactor = vault.getHealthFactor(user);
+        assertEq(healthFactor, type(uint256).max, "Health factor should be max when no borrow");
+        vm.stopPrank();
+    }
+    
+    function test_HealthFactor_AfterBorrow() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vault.borrow(2000 * 10 ** 6); // Borrow 2000 USDC
+        uint256 healthFactor = vault.getHealthFactor(user);
+        assertEq(healthFactor, 4 * 10 ** 18, "Health factor should be 4e18 after borrowing");
+        vm.stopPrank();
+    }
+
+    function test_HealthFactor_AfterRepay() public {
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vault.borrow(2000 * 10 ** 6); // Borrow 2000 USDC
+        uint256 healthFactorBefore = vault.getHealthFactor(user);
+        usdc.mint(user, 2000 * 10 ** 6);
+        usdc.approve(address(vault), 2000 * 10 ** 6);
+        vault.repay(1000 * 10 ** 6); // Repay half of the borrowed amount
+        uint256 healthFactorAfter = vault.getHealthFactor(user);
+        assertTrue(healthFactorAfter > healthFactorBefore, "Health factor should improve after repay");
+        vm.stopPrank();
+    }
+
+    function test_ProvideLiquidity_Success() public {
+        address owner = vault.owner();
+        vm.prank(owner);
+        vault.provideLiquidity(50_000 * 10 ** 6); // Provide additional liquidity
+        assertEq(usdc.balanceOf(address(vault)), 150_000 * 10 ** 6, "Vault USDC balance should increase");
+    }
+
+    function test_ProvideLiquidity_OnlyOwner_Reverts() public {
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, user));
+        vault.provideLiquidity(50_000 * 10 ** 6);
     }
 }
 

@@ -1,18 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
-import '@openzeppelin/contracts/access/Ownable.sol';
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "./libraries/MathLib.sol";
+
+interface IERC20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+}
 
 contract DrainMe is Ownable{
-    constructor() Ownable(msg.sender) {
-    }
-
     // State variables
     mapping(address => uint256) public deposits;
     mapping(address => uint256) public collaterals;
     mapping(address => uint256) public pendingWithdrawals;
+    mapping(address => uint256) public borrowed; // В USDC (6 знаков)
+
     uint256 public totalDeposits;
     uint256 public totalCollaterals;
+    uint256 public constant ETH_PRICE = 2000e18; // Хардкодим $2000 за 1 ETH для начала
+    uint256 public constant LIQUIDATION_THRESHOLD = 0.8e18; // 80% (в WAD)
+    uint256 public constant LTV = 0.75e18; // 75% (в WAD)
+    uint256 public totalBorrowed;
     bool private locked;
+    IERC20 public immutable USDC;
 
     // Events
     event Deposited(address indexed user, uint256 amount);
@@ -23,7 +35,14 @@ contract DrainMe is Ownable{
     event EmergencyWithdrawn(uint256 amount);
     event PendingWithdrawalClaimed(address indexed user, uint256 amount);
     event PendingWithdrawalCreated(address indexed owner, uint256 amount);
+    event Borrowed(address indexed user, uint256 amount);
+    event Repaid(address indexed user, uint256 amount);
+    
+    constructor(address _usdc) Ownable(msg.sender) {
+        require(_usdc != address(0), "USDC address cannot be zero");
+        USDC = IERC20(_usdc);
 
+    }
 
     // Modifiers
     modifier noReentrancy() {
@@ -113,5 +132,51 @@ contract DrainMe is Ownable{
 
     function getTotalDeposits() external view returns (uint256) {
         return totalDeposits;
+    }
+
+    function provideLiquidity(uint256 amount) external onlyOwner {
+        require(amount > 0, "Amount must be > 0");
+        require(USDC.transferFrom(msg.sender, address(this), amount), "Transfer failed");
+    }
+
+    function getAccountData(address user) public view returns (uint256 collateralValue, uint256 borrowedValue) {
+        collateralValue = MathLib.wadMul(collaterals[user], ETH_PRICE);
+        borrowedValue = borrowed[user] * 1e12;
+        return (collateralValue, borrowedValue);
+    }
+
+    function getHealthFactor(address user) public view returns (uint256) {
+        (uint256 collateralValue, uint256 borrowedValue) = getAccountData(user);
+        if (borrowedValue == 0) {
+            return type(uint256).max;
+        }
+        uint256 liquidationValue = MathLib.wadMul(collateralValue, LIQUIDATION_THRESHOLD);
+        return MathLib.wadDiv(liquidationValue, borrowedValue);
+    }
+
+    function borrow(uint256 amount) external noReentrancy {
+        require(amount > 0, "Amount cant be less than 0");
+        require(collaterals[msg.sender] > 0, "No collateral deposited");
+        uint256 amountInWad = amount * 1e12; 
+        (uint256 collateralValue, uint256 currentBorrowedValue) = getAccountData(msg.sender);
+        uint256 maxBorrow = MathLib.wadMul(collateralValue, LTV);
+        require(currentBorrowedValue + amountInWad <= maxBorrow, "Borrow amount exceeds LTV");
+        require(USDC.balanceOf(address(this)) >= amount, "Insufficient USDC liquidity");
+        borrowed[msg.sender] += amount;
+        totalBorrowed += amount;
+        require(USDC.transfer(msg.sender, amount), "Transfer failed");
+
+        emit Borrowed(msg.sender, amount);
+    }
+
+    function repay(uint256 amount) external noReentrancy {
+        require(amount > 0, "Amount must be > 0");
+        uint256 userDebt = borrowed[msg.sender];
+        require(userDebt >= amount, "Repaying more than owed");
+        borrowed[msg.sender] -= amount;
+        totalBorrowed -= amount;
+        require(USDC.transferFrom(msg.sender, address(this), amount), "USDC transfer failed");
+
+        emit Repaid(msg.sender, amount);
     }
 }
