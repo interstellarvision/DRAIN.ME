@@ -3,11 +3,9 @@ pragma solidity ^0.8.20;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol"; 
 import "forge-std/Test.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../src/DrainMe.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
-
-contract BadOwner {
-}
 
 contract DrainMeTest is Test {
     receive() external payable {}
@@ -17,157 +15,14 @@ contract DrainMeTest is Test {
 
     function setUp() public {
         usdc = new MockUSDC();
-        vault = new DrainMe(address(usdc));
+        vault = new DrainMe(IERC20(address(usdc)));
         vm.deal(user, 10 ether); 
         usdc.mint(address(this), 1_000_000 * 1e6); // 1M USDC
         usdc.approve(address(vault), 1_000_000 * 1e6);
-        vault.provideLiquidity(100_000 * 1e6); // Заливаем 100k в пул
+        vault.deposit(100_000 * 1e6, address(this)); // Заливаем 100k в пул
     }
-
-    function test_Deposit() public {
-        vm.startPrank(user); 
-        
-        vault.deposit{value: 1 ether}();
-        
-        assertEq(vault.deposits(user), 1 ether); 
-        assertEq(address(vault).balance, 1 ether); 
-        
-        vm.stopPrank();
-    }
-
-    function test_Withdraw() public {
-        vm.startPrank(user);
-        vault.deposit{value: 5 ether}();
-        
-        vault.withdraw(2 ether);
-        
-        assertEq(vault.deposits(user), 3 ether);
-        assertEq(address(vault).balance, 3 ether);
-        vm.stopPrank();
-    }
-
-    function test_RevertOnInsufficientBalance() public {
-        vm.startPrank(user);
-        vault.deposit{value: 1 ether}();
-
-        vm.expectRevert("Insufficient balance"); 
-        vault.withdraw(2 ether); 
-        vm.stopPrank();
-    }
-
-    function test_EmitsDepositedEvent() public {
-        vm.expectEmit(true, false, false, true); 
-        emit DrainMe.Deposited(user, 1 ether);
-        
-        vm.prank(user);
-        vault.deposit{value: 1 ether}();
-    }    
-
-    function test_WithdrawActuallySendsETH() public {
-        uint256 initialBalance = user.balance; 
-
-        vm.startPrank(user);
-        vault.deposit{value: 1 ether}();
-        vault.withdraw(1 ether);
-        vm.stopPrank();
-
-        assertEq(user.balance, initialBalance, "User should have their ETH back");
-    }
-
-    function test_UserIsolation() public {
-        address hacker = makeAddr("hacker");
-        vm.deal(hacker, 1 ether);
-
-        vm.prank(user);
-        vault.deposit{value: 10 ether}();
-
-        vm.prank(hacker);
-        vault.deposit{value: 0.1 ether}();
-
-        vm.startPrank(hacker);
-        vm.expectRevert("Insufficient balance");
-        vault.withdraw(5 ether);
-        vm.stopPrank();
-    }    
-
-    function test_TotalDepositsFlow() public {
-        address user2 = makeAddr("user2");
-        vm.deal(user2, 5 ether);
-
-        vm.prank(user);
-        vault.deposit{value: 1 ether}();
-
-        vm.prank(user2);
-        vault.deposit{value: 2 ether}();
-
-        assertEq(vault.totalDeposits(), 3 ether, "Total deposits mismatch after deposits");
-
-        vm.prank(user);
-        vault.withdraw(1 ether);
-
-        assertEq(vault.totalDeposits(), 2 ether, "Total deposits mismatch after withdraw");
-    }
-
-    function test_RevertOnZeroDeposit() public {
-        vm.startPrank(user);
-        vm.expectRevert("Cannot deposit 0");
-        vault.deposit{value: 0}();
-        vm.stopPrank();
-    }
-
-    function test_RevertOnZeroWithdraw() public {
-        vm.startPrank(user);
-        vault.deposit{value: 1 ether}();
-        
-        vm.expectRevert("Cannot withdraw 0");
-        vault.withdraw(0);
-        vm.stopPrank();
-    }
-
-    function test_MultipleDepositsAndWithdrawals() public {
-        vm.startPrank(user);
-
-        vault.deposit{value: 3 ether}();
-        assertEq(vault.deposits(user), 3 ether);
-        vault.deposit{value: 5 ether}();
-        assertEq(vault.deposits(user), 8 ether);
-        vault.withdraw(vault.deposits(user));
-        assertEq(vault.deposits(user), 0 ether);
-        vm.stopPrank();
-    }
-
-    function test_getDeposit() public {
-        vm.startPrank(user);
-        vault.deposit{value: 2 ether}();
-        uint256 deposit = vault.getDeposit(user);
-        assertEq(deposit, 2 ether);
-        vm.stopPrank();
-    }
-
-    function test_getTotalDeposits() public {
-        address user2 = makeAddr("user2");
-        vm.deal(user2, 3 ether);
-
-        vm.prank(user);
-        vault.deposit{value: 2 ether}();
-
-        vm.prank(user2);
-        vault.deposit{value: 3 ether}();
-
-        uint256 total = vault.getTotalDeposits();
-        assertEq(total, 5 ether);
-    }
-
-    function test_EmitsWithdrawnEvent() public {
-        vm.startPrank(user);
-        vault.deposit{value: 1 ether}();
-        vm.expectEmit(true, false, false, true); 
-        emit DrainMe.Withdrawn(user, 1 ether);
-        
-        vault.withdraw(1 ether);
-        vm.stopPrank();
-    }
-
+   
+  
     function test_InitialOwner() public {
         address owner = vault.owner();
         assertEq(owner, address(this), "Owner should be the deployer");
@@ -228,82 +83,6 @@ contract DrainMeTest is Test {
         vm.stopPrank();
     }
 
-    function test_CollateralIsolation() public {
-        address user2 = makeAddr("user2");
-        vm.deal(user, 2 ether);
-        vm.deal(user2, 4 ether);
-        vm.startPrank(user);
-        vault.deposit{value: 2 ether}();
-        vm.stopPrank();
-        vm.startPrank(user2);
-        vault.depositCollateral{value: 4 ether}();
-        vm.stopPrank();
-        uint256 totalCollateral = vault.getTotalCollaterals();
-        assertEq(totalCollateral, 4 ether);
-        uint256 totalDeposit = vault.getTotalDeposits();
-        assertEq(totalDeposit, 2 ether);
-    }
-
-    function test_EmergencyWithdraw_Success() public {
-        address owner = vault.owner();
-        vm.deal(address(vault), 10 ether);
-        vm.startPrank(owner);
-        vm.expectEmit(false, false, false, true);
-        emit DrainMe.EmergencyWithdrawn(10 ether);
-        vault.emergencyWithdraw();
-        vm.stopPrank();
-        assertEq(address(vault).balance, 0, "Vault balance should be zero after emergency withdraw");
-    }
-
-    function test_EmergencyWithdraw_PendingWhenFail() public {
-        BadOwner badOwner = new BadOwner();
-        
-
-        vault.transferOwnership(address(badOwner));
-        vm.deal(user, 10 ether);
-        vm.prank(user);
-        vault.deposit{value: 5 ether}();
-
-        vm.prank(address(badOwner));
-        vault.emergencyWithdraw();
-
-        assertEq(address(badOwner).balance, 0);
-        assertEq(vault.pendingWithdrawals(address(badOwner)), 5 ether);
-        assertEq(vault.getTotalDeposits(), 5 ether);
-    }   
-
-    function test_ClaimPendingWithdrawal_AfterOwnershipTransfer() public {
-        BadOwner badOwner = new BadOwner();
-        address goodUser = makeAddr("goodUser");
-        
-        vm.deal(address(this), 10 ether);
-        vault.deposit{value: 10 ether}();
-        
-        vault.transferOwnership(address(badOwner));
-        
-        vm.prank(address(badOwner));
-        vault.emergencyWithdraw();
-        assertEq(vault.pendingWithdrawals(address(badOwner)), 10 ether);
-
-        vm.prank(address(badOwner));
-        vault.claimPendingWithdrawal(address(badOwner), payable(goodUser));
-        assertEq(vault.pendingWithdrawals(address(badOwner)), 0);
-        assertEq(goodUser.balance, 10 ether);
-    }
-
-    function test_Reentrancy_Protected() public {
-        vm.deal(user, 10 ether);
-        vm.prank(user);
-        vault.deposit{value: 10 ether}();
-
-        Attacker attacker = new Attacker(vault);
-        vm.deal(address(attacker), 1 ether);
-
-        vm.prank(address(attacker));
-        vm.expectRevert("Transfer failed");
-        attacker.attack{value: 1 ether}();
-        assertEq(address(vault).balance, 10 ether);
-    } 
 
     function test_WithdrawCollateral_OnlyOwner() public {
         vm.prank(user);
@@ -333,7 +112,7 @@ contract DrainMeTest is Test {
         vm.deal(user, 5 ether);
         vault.depositCollateral{value: 5 ether}();
         vm.expectRevert("Borrow amount exceeds LTV");
-        vault.borrow(9000 * 10 ** 6); // Attempt to borrow more than 80% of collateral value
+        vault.borrow(9000 * 10 ** 6); // Attempt to borrow more than 75% of collateral value
         vm.stopPrank();
     }
 
@@ -452,35 +231,240 @@ contract DrainMeTest is Test {
         vm.stopPrank();
     }
 
-    function test_ProvideLiquidity_Success() public {
+    // === ERC-4626 DEPOSIT / WITHDRAW ===
+
+    function test_Deposit_MintsShares() public {
+        usdc.mint(user, 1000 * 1e6);
+        
+        vm.startPrank(user);
+        usdc.approve(address(vault), 1000 * 1e6);
+        uint256 shares = vault.deposit(1000 * 1e6, user);
+        vm.stopPrank();
+        
+        assertEq(shares, 1000 * 1e6, "Should mint 1000 shares");
+        assertEq(vault.balanceOf(user), 1000 * 1e6, "User should have 1000 shares");
+    }
+
+    function test_Redeem_BurnsShares() public {
+        usdc.mint(user, 1000 * 1e6);
+        
+        vm.startPrank(user);
+        usdc.approve(address(vault), 1000 * 1e6);
+        vault.deposit(1000 * 1e6, user);
+        
+        uint256 assets = vault.redeem(1000 * 1e6, user, user);
+        vm.stopPrank();
+        
+        assertEq(assets, 1000 * 1e6, "Should return 1000 USDC");
+        assertEq(vault.balanceOf(user), 0, "Shares should be burned");
+        assertEq(usdc.balanceOf(user), 1000 * 1e6, "User should have USDC back");
+    }
+
+    function test_Deposit_ZeroAmount_Reverts() public {
+        vm.startPrank(user);
+        usdc.approve(address(vault), 1000 * 1e6);
+        vm.expectRevert();
+        vault.deposit(0, user);
+        vm.stopPrank();
+    }
+
+    function test_TotalAssets_IncludesBorrowed() public {
+        uint256 totalBefore = vault.totalAssets();
+        
+        // user берёт в долг
+        vm.startPrank(user);
+        vm.deal(user, 5 ether);
+        vault.depositCollateral{value: 5 ether}();
+        vault.borrow(2000 * 1e6);
+        vm.stopPrank();
+        
+        uint256 totalAfter = vault.totalAssets();
+        assertEq(totalAfter, totalBefore, "TotalAssets should not change after borrow");
+    }
+
+    function test_SharePrice_StableAfterBorrow() public {
+        // user1 депозитит
+        address user1 = makeAddr("user1");
+        usdc.mint(user1, 10_000 * 1e6);
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 10_000 * 1e6);
+        vault.deposit(10_000 * 1e6, user1);
+        vm.stopPrank();
+        
+        uint256 sharesBefore = vault.convertToAssets(1e6); // цена 1 share до borrow
+        
+        // user2 берёт в долг
+        address user2 = makeAddr("user2");
+        vm.deal(user2, 5 ether);
+        vm.startPrank(user2);
+        vault.depositCollateral{value: 5 ether}();
+        vault.borrow(5000 * 1e6);
+        vm.stopPrank();
+        
+        uint256 sharesAfter = vault.convertToAssets(1e6); // цена 1 share после borrow
+        
+        assertEq(sharesAfter, sharesBefore, "Share price must not change after borrow");
+    }
+
+    function test_SharePrice_GrowsAfterRepayWithExtra() public {
+        // Этот тест симулирует ситуацию когда кто-то "донатит" USDC в vault
+        // (в реальности это будут проценты, но их пока нет — 2.5)
+        
+        address depositor = makeAddr("depositor");
+        usdc.mint(depositor, 10_000 * 1e6);
+        vm.startPrank(depositor);
+        usdc.approve(address(vault), 10_000 * 1e6);
+        vault.deposit(10_000 * 1e6, depositor);
+        vm.stopPrank();
+        
+        // донатим 1000 USDC напрямую в vault (симуляция процентов)
+        usdc.mint(address(vault), 1000 * 1e6);
+        
+        // теперь totalAssets = 111_000 (100k setUp + 10k depositor + 1k донат)
+        // но shares выпущено на 110_000 (100k setUp shares + 10k depositor shares)
+        // share price вырос
+        
+        uint256 assetsPerShare = vault.convertToAssets(1e6);
+        assertTrue(assetsPerShare > 1e6, "Share price should be above 1:1 after donation");
+    }
+
+    function test_MultipleDepositors_FairShares() public {
+        // user1 депозитит первым
+        address user1 = makeAddr("user1");
+        usdc.mint(user1, 5000 * 1e6);
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 5000 * 1e6);
+        vault.deposit(5000 * 1e6, user1);
+        vm.stopPrank();
+        
+        // user2 депозитит вторым (при том же share price)
+        address user2 = makeAddr("user2");
+        usdc.mint(user2, 3000 * 1e6);
+        vm.startPrank(user2);
+        usdc.approve(address(vault), 3000 * 1e6);
+        vault.deposit(3000 * 1e6, user2);
+        vm.stopPrank();
+        
+        // оба должны иметь shares пропорционально вкладу
+        assertEq(vault.balanceOf(user1), 5000 * 1e6, "User1 should have 5000 shares");
+        assertEq(vault.balanceOf(user2), 3000 * 1e6, "User2 should have 3000 shares");
+    }
+
+    function test_WithdrawWithBorrowedFunds() public {
+        // user1 депозитит
+        address user1 = makeAddr("user1");
+        usdc.mint(user1, 5000 * 1e6);
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 5000 * 1e6);
+        vault.deposit(5000 * 1e6, user1);
+        vm.stopPrank();
+        
+        address user2 = makeAddr("user2");
+        vm.deal(user2, 1 ether);
+        vm.startPrank(user2);
+        vault.depositCollateral{value: 1 ether}();
+        vault.borrow(1500 * 1e6); // Borrow 1500 USDC
+        vm.stopPrank();
+        
         address owner = vault.owner();
-        vm.prank(owner);
-        vault.provideLiquidity(50_000 * 10 ** 6); // Provide additional liquidity
-        assertEq(usdc.balanceOf(address(vault)), 150_000 * 10 ** 6, "Vault USDC balance should increase");
+        vm.startPrank(owner);
+        vm.expectRevert("Withdrawing this deposit will put your loan in a precarious situation; reduce the amount or pay off part of the debt.");
+        vault.withdrawCollateral(user2, 0.5 ether); // Attempt to withdraw collateral
+        vm.stopPrank();
+
+        assertEq(vault.getCollateral(user2), 1 ether, "Collateral should remain unchanged");
+        assertEq(vault.borrowed(user2), 1500 * 1e6, "Borrowed amount should remain unchanged");
     }
 
-    function test_ProvideLiquidity_OnlyOwner_Reverts() public {
-        vm.prank(user);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, user));
-        vault.provideLiquidity(50_000 * 10 ** 6);
+    function test_WithdrawWithBorrowedFunds_Success() public {
+        // user1 депозитит
+        address user1 = makeAddr("user1");
+        usdc.mint(user1, 5000 * 1e6);
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 5000 * 1e6);
+        vault.deposit(5000 * 1e6, user1);
+        vm.stopPrank();
+        
+        address user2 = makeAddr("user2");
+        vm.deal(user2, 1 ether);
+        vm.startPrank(user2);
+        vault.depositCollateral{value: 1 ether}();
+        vault.borrow(1000 * 1e6); // Borrow 1000 USDC
+        vm.stopPrank();
+        
+        uint256 user2BalanceBefore = user2.balance; // Check user2's balance before withdrawal
+        
+        address owner = vault.owner();
+        vm.startPrank(owner);
+        vault.withdrawCollateral(user2, 0.2 ether); // Attempt to withdraw collateral
+        vm.stopPrank();
+
+        assertEq(user2.balance, user2BalanceBefore + 0.2 ether, "User2 should receive withdrawn collateral");
+        assertEq(vault.getCollateral(user2), 0.8 ether, "Collateral should remain unchanged");
+        assertEq(vault.borrowed(user2), 1000 * 1e6, "Borrowed amount should remain unchanged");
+        
+    }
+
+    function test_WithdrawCollateral_AtLtvBoundary() public {
+        // user1 депозитит
+        address user1 = makeAddr("user1");
+        usdc.mint(user1, 5000 * 1e6);
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 5000 * 1e6);
+        vault.deposit(5000 * 1e6, user1);
+        vm.stopPrank();
+    
+        address user2 = makeAddr("user2");
+        vm.deal(user2, 1 ether);
+        vm.startPrank(user2);
+        vault.depositCollateral{value: 1 ether}();
+        vault.borrow(1200 * 1e6); // Borrow 1200 USDC
+        vm.stopPrank();
+        
+        uint256 user2BalanceBefore = user2.balance; // Check user2's balance before withdrawal
+        uint256 totalCollateralsBefore = vault.getTotalCollaterals();
+        
+        address owner = vault.owner();
+        vm.startPrank(owner);
+        vault.withdrawCollateral(user2, 0.2 ether); // Attempt to withdraw collateral
+        vm.stopPrank();
+
+        assertEq(user2.balance, user2BalanceBefore + 0.2 ether, "User2 should receive withdrawn collateral");
+        assertEq(vault.getCollateral(user2), 0.8 ether, "Collateral should be reduced by withdrawn amount");
+        assertEq(vault.borrowed(user2), 1200 * 1e6, "Borrowed amount should remain unchanged");
+        assertEq(vault.getTotalCollaterals(), totalCollateralsBefore - 0.2 ether, "Total collaterals should be reduced by withdrawn amount");
+
+    }
+
+    function test_WithdrawCollateral_AtLtvBoundary_revert() public {
+        // user1 депозитит
+        address user1 = makeAddr("user1");
+        usdc.mint(user1, 5000 * 1e6);
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 5000 * 1e6);
+        vault.deposit(5000 * 1e6, user1);
+        vm.stopPrank();
+    
+        address user2 = makeAddr("user2");
+        vm.deal(user2, 1 ether);
+        vm.startPrank(user2);
+        vault.depositCollateral{value: 1 ether}();
+        vault.borrow(1200 * 1e6); // Borrow 1200 USDC
+        vm.stopPrank();
+        
+        uint256 user2BalanceBefore = user2.balance; // Check user2's balance before withdrawal
+        uint256 totalCollateralsBefore = vault.getTotalCollaterals();
+        
+        address owner = vault.owner();
+        vm.startPrank(owner);
+        vm.expectRevert("Withdrawing this deposit will put your loan in a precarious situation; reduce the amount or pay off part of the debt.");        
+        vault.withdrawCollateral(user2, 0.2 ether + 1 wei); // Attempt to withdraw more than allowed by LTV boundary
+        vm.stopPrank();
+
+        assertEq(user2.balance, user2BalanceBefore, "User2 shouldn't receive withdrawn collateral");
+        assertEq(vault.getCollateral(user2), 1 ether, "Collateral shouldn't be reduced by withdrawn amount");
+        assertEq(vault.borrowed(user2), 1200 * 1e6, "Borrowed amount should remain unchanged");
+        assertEq(vault.getTotalCollaterals(), totalCollateralsBefore, "Total collaterals shouldn't be reduced by withdrawn amount");
+
     }
 }
-
-    contract Attacker {
-    DrainMe vault;
-    constructor(DrainMe _vault) { vault = _vault; }
-
-    function attack() external payable {
-        vault.deposit{value: msg.value}();
-        vault.withdraw(msg.value);
-    }
-
-    receive() external payable {
-        if (address(vault).balance >= msg.value) {
-            vault.withdraw(msg.value);
-        }
-    }
-}
-
-
-
